@@ -220,36 +220,28 @@ The tool outputs standard MARCXML format:
 
 ### Concurrent Pipeline
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Database Pool                         │
-│              (10-30 concurrent connections)              │
-└────────┬──────────┬──────────┬──────────┬──────────────┘
-         │          │          │          │
-         ▼          ▼          ▼          ▼
-    ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
-    │Worker 1│ │Worker 2│ │Worker 3│ │Worker N│
-    │Chunk 0 │ │Chunk 1 │ │Chunk 2 │ │Chunk N │
-    └────┬───┘ └────┬───┘ └────┬───┘ └────┬───┘
-         │          │          │          │
-         └──────────┴──────────┴──────────┘
-                      │
-                      ▼
-              ┌──────────────┐
-              │   Channel    │
-              │  (Buffered)  │
-              └──────┬───────┘
-                     │
-                     ▼
-              ┌──────────────┐
-              │ XML Writer   │
-              │  (Streaming) │
-              └──────┬───────┘
-                     │
-                     ▼
-              ┌──────────────┐
-              │ Output File  │
-              └──────────────┘
+```mermaid
+graph TD
+    A[Database Pool<br/>10-30 concurrent connections]
+    A --> B1[Worker 1<br/>Chunk 0]
+    A --> B2[Worker 2<br/>Chunk 1]
+    A --> B3[Worker 3<br/>Chunk 2]
+    A --> B4[Worker N<br/>Chunk N]
+    B1 --> C[Channel<br/>Buffered]
+    B2 --> C
+    B3 --> C
+    B4 --> C
+    C --> D[XML Writer<br/>Streaming]
+    D --> E[Output File]
+
+    style A fill:#000,stroke:#000,color:#fff
+    style B1 fill:#000,stroke:#000,color:#fff
+    style B2 fill:#000,stroke:#000,color:#fff
+    style B3 fill:#000,stroke:#000,color:#fff
+    style B4 fill:#000,stroke:#000,color:#fff
+    style C fill:#000,stroke:#000,color:#fff
+    style D fill:#000,stroke:#000,color:#fff
+    style E fill:#000,stroke:#000,color:#fff
 ```
 
 ### Key Components
