@@ -1,358 +1,84 @@
 # MARC Extractor RS
 
-**High-performance MARC record extractor for Evergreen ILS** - Built with Rust for blazing-fast extraction of millions of records.
+Export MARC XML records from an Evergreen library database into a MARC collection file. This Rust command-line tool reads PostgreSQL in chunks, fetches chunks concurrently and sends records to a single XML writer.
 
-<div align="center">
+It is a focused data-operations utility: extract catalog records without building a separate application around the database. The repository contains the CLI, database reader and XML writer; it does not include a database or a published container image.
 
-![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg?style=for-the-badge&logo=rust)
-![Tokio](https://img.shields.io/badge/tokio-async-blue.svg?style=for-the-badge)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13+-336791.svg?style=for-the-badge&logo=postgresql&logoColor=white)
-![SQLx](https://img.shields.io/badge/SQLx-0.8-green.svg?style=for-the-badge)
-![License](https://img.shields.io/badge/license-GPL--compatible-blue.svg?style=for-the-badge)
-![Performance](https://img.shields.io/badge/performance-60x_faster-red.svg?style=for-the-badge)
+## Data flow
 
-</div>
+```text
+Evergreen PostgreSQL (biblio.record_entry)
+    -> chunk queries through a connection pool
+    -> bounded record channel
+    -> MARC XML collection file
+```
 
----
+The reader uses `id`, `marc` and `deleted` from `biblio.record_entry`. Empty or null MARC values are skipped. Deleted records are excluded unless requested.
 
-## Table of Contents
+## Build
 
-- [Features](#features)
-- [Performance](#performance)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Docker Container Quick Start](#docker-container-quick-start)
-  - [Basic Usage](#basic-usage)
-  - [Full Options](#full-options)
-- [Examples](#examples)
-- [Output Format](#output-format)
-- [Architecture](#architecture)
-- [Performance Tuning](#performance-tuning)
-- [Error Handling](#error-handling)
-- [Troubleshooting](#troubleshooting)
-- [Development](#development)
-- [License](#license)
-
----
-
-## Features
-
-- **Parallel Processing** - Concurrent database connections with configurable workers
-- **Real-time Progress** - Live progress bar with records/sec and ETA
-- **Memory Efficient** - Streaming architecture handles millions of records
-- **Lightning Fast** - Process millions of records in minutes instead of hours
-- **Error Resilient** - Continues processing on errors, reports at completion
-- **Production Ready** - Optimized build with LTO and maximum optimization
-
-## Performance
-
-**Comparison with Perl/OpenSRF version:**
-
-| Records | Perl/OpenSRF | Rust/Parallel | Speedup |
-|---------|--------------|---------------|---------|
-| 100K    | ~30 min      | ~30 sec       | **60x** |
-| 1M      | ~5 hours     | ~5 min        | **60x** |
-| 10M     | ~2 days      | ~50 min       | **58x** |
-
-*Benchmarks based on typical PostgreSQL setup with 10 workers*
-
-## Installation
-
-### Prerequisites
-
-- Rust 1.70+ ([install from rustup.rs](https://rustup.rs))
-- PostgreSQL database with Evergreen ILS schema
-- Database credentials
-
-### Build from Source
+Requirements: a current stable Rust toolchain and, for extraction, access to an Evergreen PostgreSQL database with read permissions on the source table.
 
 ```bash
+git clone https://github.com/that-guy-scott/marc_extractor_rs.git
 cd marc_extractor_rs
-
-# Development build
-cargo build
-
-# Production build (optimized)
-cargo build --release
+cargo build --locked --release
+./target/release/marc_extractor_rs --help
 ```
 
-The binary will be in `target/release/marc_extractor_rs`
+## Extract records
 
-## Usage
-
-### Docker Container Quick Start
-
-**For Evergreen Docker containers with default credentials:**
+Set `DATABASE_URL` in your shell using your database credentials. The following value is an example, not a working credential:
 
 ```bash
+export DATABASE_URL='postgresql://reader:replace-me@localhost/evergreen'
 ./target/release/marc_extractor_rs \
-  --db-url "postgresql://evergreen:databasepassword@localhost:5432/evergreen" \
-  --output all_records.xml \
-  --workers 20 \
+  --output catalog.xml \
+  --workers 4 \
+  --chunk-size 1000 \
   --verbose
 ```
 
-**Default Docker Credentials:**
-- Username: `evergreen`
-- Password: `databasepassword`
-- Database: `evergreen`
-- Host: `localhost`
-- Port: `5432`
+Start on a test copy or read replica and validate the output before using it downstream. `--output` creates or replaces the named file. Prefer it over shell redirection because logging can share stdout with XML output.
 
-### Basic Usage
+| Option | Behavior |
+| --- | --- |
+| `--db-url` | Database URL; alternatively set `DATABASE_URL`. |
+| `-o`, `--output` | Output file; otherwise writes XML to stdout. |
+| `-w`, `--workers` | Maximum pool connections; default 10. |
+| `-c`, `--chunk-size` | Records requested per chunk; default 1000. |
+| `-d`, `--include-deleted` | Include rows marked deleted. |
+| `-v`, `--verbose` | Enable informational logging. |
+| `--limit` | Limit scheduling by record count; see the chunk-boundary limitation below. |
 
-```bash
-marc_extractor_rs \
-  --db-url "postgresql://evergreen:password@localhost/evergreen" \
-  --output all_records.xml
-```
+Use positive values for workers and chunk size. The current CLI does not validate all numeric combinations.
 
-### Full Options
+## Output
 
-```bash
-marc_extractor_rs [OPTIONS] --db-url <DB_URL>
-
-Options:
-      --db-url <DB_URL>
-          PostgreSQL database URL
-          Example: postgresql://evergreen:password@localhost/evergreen
-          [env: DATABASE_URL=]
-
-  -o, --output <OUTPUT>
-          Output file path (defaults to stdout)
-
-  -w, --workers <WORKERS>
-          Number of concurrent workers/connections
-          [default: 10]
-
-  -c, --chunk-size <CHUNK_SIZE>
-          Number of records to fetch per chunk
-          [default: 1000]
-
-  -d, --include-deleted
-          Include deleted records
-
-  -v, --verbose
-          Verbose output
-
-      --limit <LIMIT>
-          Maximum number of records to process (for testing)
-
-  -h, --help
-          Print help
-
-  -V, --version
-          Print version
-```
-
-## Examples
-
-### Extract all active records to a file
-
-```bash
-marc_extractor_rs \
-  --db-url "postgresql://evergreen:pass@localhost/evergreen" \
-  --output all_records.xml \
-  --verbose
-```
-
-### Include deleted records with 20 workers
-
-```bash
-marc_extractor_rs \
-  --db-url "postgresql://evergreen:pass@localhost/evergreen" \
-  --output all_records.xml \
-  --workers 20 \
-  --include-deleted
-```
-
-### Extract to stdout (pipe to gzip)
-
-```bash
-marc_extractor_rs \
-  --db-url "postgresql://evergreen:pass@localhost/evergreen" \
-  | gzip > records.xml.gz
-```
-
-### Test with first 1000 records
-
-```bash
-marc_extractor_rs \
-  --db-url "postgresql://evergreen:pass@localhost/evergreen" \
-  --output test.xml \
-  --limit 1000 \
-  --verbose
-```
-
-### Use environment variable for database URL
-
-```bash
-export DATABASE_URL="postgresql://evergreen:pass@localhost/evergreen"
-
-marc_extractor_rs --output all_records.xml
-```
-
-### Maximum performance (30 workers, large chunks)
-
-```bash
-marc_extractor_rs \
-  --db-url "postgresql://evergreen:pass@localhost/evergreen" \
-  --output all_records.xml \
-  --workers 30 \
-  --chunk-size 5000
-```
-
-## Output Format
-
-The tool outputs standard MARCXML format:
+The writer wraps stored MARC XML in a collection:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <collection xmlns="http://www.loc.gov/MARC21/slim">
-  <record>
-    <!-- Individual MARC records -->
-  </record>
-  <!-- ... more records ... -->
+  <!-- Record XML from the source database -->
 </collection>
 ```
 
-## Architecture
+This is a structural illustration, not a sample export or a MARC validation result.
 
-### Concurrent Pipeline
+## Limits and tradeoffs
 
-```mermaid
-graph TD
-    A[Database Pool<br/>10-30 concurrent connections]
-    A --> B1[Worker 1<br/>Chunk 0]
-    A --> B2[Worker 2<br/>Chunk 1]
-    A --> B3[Worker 3<br/>Chunk 2]
-    A --> B4[Worker N<br/>Chunk N]
-    B1 --> C[Channel<br/>Buffered]
-    B2 --> C
-    B3 --> C
-    B4 --> C
-    C --> D[XML Writer<br/>Streaming]
-    D --> E[Output File]
+- Queries use `LIMIT`/`OFFSET`; a concurrently changing database can produce an inconsistent export. Use a stable source for reproducible results.
+- Chunks can complete out of order, so output order is not guaranteed.
+- `--limit` controls chunk scheduling, but the last query still requests a full chunk. It is not a strict exported-record cap.
+- Wrapper cleanup is string-based and does not validate or repair MARC XML. Validate the resulting file with your downstream tools.
+- Fetch failures are counted; write errors and worker failures are logged but are not all reflected in the final error count. Inspect logs as well as the exit status.
+- Concurrency is a tuning control, not a promised speedup. There is no reproducible benchmark dataset or harness in this repository; previous numerical speed comparisons have been removed.
 
-    style A fill:#000,stroke:#000,color:#fff
-    style B1 fill:#000,stroke:#000,color:#fff
-    style B2 fill:#000,stroke:#000,color:#fff
-    style B3 fill:#000,stroke:#000,color:#fff
-    style B4 fill:#000,stroke:#000,color:#fff
-    style C fill:#000,stroke:#000,color:#fff
-    style D fill:#000,stroke:#000,color:#fff
-    style E fill:#000,stroke:#000,color:#fff
-```
+## Code and verification
 
-### Key Components
+- [CLI and orchestration](src/main.rs)
+- [Database queries](src/db.rs)
+- [XML output](src/writer.rs)
 
-- **Database Pool** - Managed by sqlx with configurable connections
-- **Worker Tasks** - Tokio async tasks fetching chunks in parallel
-- **Channel** - Buffered MPSC channel for record streaming
-- **XML Writer** - Async buffered writer with automatic cleanup
-
-## Performance Tuning
-
-### Workers
-
-- **Default (10)**: Good for most systems
-- **High (20-30)**: For powerful databases with good I/O
-- **Low (5)**: For constrained systems or shared databases
-
-### Chunk Size
-
-- **Default (1000)**: Balanced for most use cases
-- **Large (5000)**: Better for high-bandwidth, low-latency connections
-- **Small (500)**: Better for slow connections or memory-constrained systems
-
-### Database Optimization
-
-For maximum performance, ensure:
-- PostgreSQL has adequate `shared_buffers` (25% of RAM)
-- `work_mem` is sufficient (50MB+)
-- Connection limit allows your worker count
-- Indexes on `biblio.record_entry(id, deleted)`
-
-### System Resources
-
-Monitor:
-- **CPU**: Should be near 100% on database server
-- **Network**: Should be saturated for remote databases
-- **Memory**: Writer uses minimal memory (~10MB)
-- **Disk I/O**: Output file writing is buffered
-
-## Error Handling
-
-The tool is designed to be resilient:
-
-- Continues processing if individual chunks fail
-- Logs errors to stderr while progress continues
-- Reports error count at completion
-- Exits with code 1 if any errors occurred
-- Handles database disconnections gracefully
-
-## Troubleshooting
-
-### Too many database connections
-
-```
-Error: too many connections for role "evergreen"
-```
-
-**Solution**: Reduce `--workers` count or increase PostgreSQL `max_connections`
-
-### Out of memory
-
-```
-Error: Cannot allocate memory
-```
-
-**Solution**: Reduce `--chunk-size` or `--workers`
-
-### Slow performance
-
-1. Check database query performance with `--verbose`
-2. Increase `--workers` if CPU/network not saturated
-3. Increase `--chunk-size` for high-bandwidth connections
-4. Ensure PostgreSQL has proper indexes and tuning
-
-### Empty MARC data warnings
-
-```
-Skipping record 12345 - empty MARC data
-```
-
-**This is normal** - Some records may have NULL or empty MARC fields
-
-## Development
-
-### Run Tests
-
-```bash
-cargo test
-```
-
-### Run with Logging
-
-```bash
-RUST_LOG=debug cargo run -- --db-url "..." --output test.xml
-```
-
-### Profile Performance
-
-```bash
-cargo build --release
-time ./target/release/marc_extractor_rs --db-url "..." --output test.xml --verbose
-```
-
-## License
-
-Same as Evergreen ILS (GPL-compatible)
-
-## Author
-
-Built for Evergreen ILS community
-
----
-
-**Need help?** Report issues or ask questions in the Evergreen ILS community forums.
+`cargo build` and `--help` verify compilation and CLI availability without connecting to a database. An actual export requires an Evergreen database and separate data-integrity checks. See [verification notes](docs/verification.md).
